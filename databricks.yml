@@ -1,0 +1,8 @@
+bundle:
+  name: dp-poc-sales-sonia
+
+targets:
+  dev:
+    default: true
+    workspace:
+      host: https://dbc-2c66b012-0c78.cloud.databricks.com

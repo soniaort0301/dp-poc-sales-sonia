@@ -1,0 +1,18 @@
+resources:
+  jobs:
+    sales_pipeline:
+      name: sales_pipeline
+      tasks:
+        - task_key: bronze
+          sql_task:
+            file:
+              path: ../source/bronze_sales_transactions.sql
+            warehouse_id: <02003ba72f8e095f>
+
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          sql_task:
+            file:
+              path: ../source/silver_sales_transactions.sql
+            warehouse_id: <02003ba72f8e095f>
