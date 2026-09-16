@@ -1,6 +1,9 @@
 bundle:
   name: dp-poc-sales-sonia
 
+include:
+  - resources/*.yml
+
 targets:
   dev:
     default: true
