@@ -2,12 +2,17 @@ resources:
   jobs:
     sales_pipeline:
       name: sales_pipeline
+      parameters:
+        - name: batch_date
+          default: "{{job.trigger.time.iso_date}}"
       tasks:
         - task_key: bronze
           sql_task:
             file:
               path: ../source/bronze_sales_transactions.sql
-            warehouse_id: <02003ba72f8e095f>
+            warehouse_id: 02003ba72f8e095f
+            parameters:
+              batch_date: "{{job.parameters.batch_date}}"
 
         - task_key: silver
           depends_on:
@@ -15,4 +20,6 @@ resources:
           sql_task:
             file:
               path: ../source/silver_sales_transactions.sql
-            warehouse_id: <02003ba72f8e095f>
+            warehouse_id: 02003ba72f8e095f
+            parameters:
+              batch_date: "{{job.parameters.batch_date}}"
