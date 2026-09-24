@@ -5,6 +5,8 @@ resources:
       parameters:
         - name: batch_date
           default: "{{job.trigger.time.iso_date}}"
+        - name: batch_hour
+          default: "{{job.trigger.time.hour}}"
       tasks:
         - task_key: bronze
           sql_task:
@@ -13,6 +15,7 @@ resources:
             warehouse_id: 02003ba72f8e095f
             parameters:
               batch_date: "{{job.parameters.batch_date}}"
+              batch_hour: "{{job.parameters.batch_hour}}"
 
         - task_key: silver
           depends_on:
@@ -23,3 +26,4 @@ resources:
             warehouse_id: 02003ba72f8e095f
             parameters:
               batch_date: "{{job.parameters.batch_date}}"
+              batch_hour: "{{job.parameters.batch_hour}}"
