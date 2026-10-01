@@ -5,4 +5,4 @@ targets:
   dev:
     default: true
     workspace:
-      host: https://dbc-2c66b012-0c78.cloud.databricks.com
+      host: https://dbc-feecfd3a-0299.cloud.databricks.com
