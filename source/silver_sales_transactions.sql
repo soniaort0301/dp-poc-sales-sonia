@@ -1,44 +1,27 @@
-MERGE INTO db_test_sonia.sch_silver.sales_transactions AS target
-USING (
-  SELECT 
-    *,
-    current_timestamp() AS _updated_at
-  FROM db_test_sonia.sch_bronze.sales_transactions
-  WHERE ingestion_date = :batch_date AND ingestion_hour = :batch_hour
-) AS source
-ON target.transactionID = source.transactionID
+-- 1. Fermer
+UPDATE db_test_sonia.sch_silver.sales_transactions AS t
+SET valid_to = current_timestamp()
+WHERE valid_to IS NULL
+AND EXISTS (
+  SELECT 1
+  FROM db_test_sonia.sch_bronze.sales_transactions b
+  WHERE b.ingestion_ts = CAST(:batch_ts AS TIMESTAMP)
+    AND sha2(to_json(struct(b.transactionID)), 256) = t._key_hash
+    AND sha2(to_json(struct(b.* EXCEPT (ingestion_ts))), 256) <> t._change_hash
+);
 
-WHEN MATCHED AND (
-    target.customerID <> source.customerID OR
-    target.franchiseID <> source.franchiseID OR
-    target.dateTime <> source.dateTime OR
-    target.product <> source.product OR
-    target.quantity <> source.quantity OR
-    target.unitPrice <> source.unitPrice OR
-    target.totalPrice <> source.totalPrice OR
-    target.paymentMethod <> source.paymentMethod
-) THEN 
-  UPDATE SET
-    target.customerID = source.customerID,
-    target.franchiseID = source.franchiseID,
-    target.dateTime = source.dateTime,
-    target.product = source.product,
-    target.quantity = source.quantity,
-    target.unitPrice = source.unitPrice,
-    target.totalPrice = source.totalPrice,
-    target.paymentMethod = source.paymentMethod,
-    target.ingestion_date = source.ingestion_date,
-    target.ingestion_hour = source.ingestion_hour,
-    target._updated_at = source._updated_at
-
-WHEN NOT MATCHED THEN 
-  INSERT (
-    transactionID, customerID, franchiseID, dateTime, product, 
-    quantity, unitPrice, totalPrice, paymentMethod, ingestion_date, ingestion_hour,
-    _inserted_at, _updated_at
-  )
-  VALUES (
-    source.transactionID, source.customerID, source.franchiseID, source.dateTime, source.product,
-    source.quantity, source.unitPrice, source.totalPrice, source.paymentMethod, source.ingestion_date, source.ingestion_hour,
-    current_timestamp(), source._updated_at
-  );
+-- 2. Ouvrir
+INSERT INTO db_test_sonia.sch_silver.sales_transactions
+SELECT
+  b.*,
+  sha2(to_json(struct(b.transactionID)), 256) AS _key_hash,
+  sha2(to_json(struct(b.* EXCEPT (ingestion_ts))), 256) AS _change_hash,
+  current_timestamp() AS valid_from,
+  CAST(NULL AS TIMESTAMP) AS valid_to
+FROM db_test_sonia.sch_bronze.sales_transactions b
+LEFT JOIN db_test_sonia.sch_silver.sales_transactions t
+  ON sha2(to_json(struct(b.transactionID)), 256) = t._key_hash
+  AND t.valid_to IS NULL
+WHERE b.ingestion_ts = CAST(:batch_ts AS TIMESTAMP)
+  AND (t.transactionID IS NULL
+       OR sha2(to_json(struct(b.* EXCEPT (ingestion_ts))), 256) <> t._change_hash);
