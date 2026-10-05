@@ -1,4 +1,4 @@
-INSERT INTO db_test_sonia.sch_silver.sales_transactions
+INSERT INTO db_test_sonia.sch_silver.sales_transactions BY NAME
 SELECT
   b.*,
   sha2(to_json(struct(b.transactionID)), 256) AS _key_hash,
