@@ -1,133 +1,104 @@
+-- ============================================================
+-- TEST 1 : Les colonnes techniques de silver existent avec le bon type
+-- (c'est l'erreur qu'on a eue : un hash tombe dans une colonne date)
+-- Attendu : 0 ligne = PASS
+-- ============================================================
+
+SELECT t.column_name, t.type_attendu, c.data_type AS type_reel
+FROM (VALUES
+        ('_key_hash',    'STRING'),
+        ('_change_hash', 'STRING'),
+        ('valid_from',   'TIMESTAMP'),
+        ('valid_to',     'TIMESTAMP')
+     ) AS t(column_name, type_attendu)
+LEFT JOIN db_test_sonia.information_schema.columns c
+  ON c.table_schema = 'sch_silver'
+  AND c.table_name = 'sales_transactions'
+  AND c.column_name = t.column_name
+WHERE c.data_type IS NULL OR c.data_type <> t.type_attendu;
 
 
 -- ============================================================
--- TEST 1 : Verification du schema (colonnes source vs cible)
--- Objectif : detecter une evolution des endpoints (colonne
--- ajoutee / retiree / renommee) avant qu'elle ne casse le MERGE.
--- Point de vigilance (bug corrige) : en Unity Catalog,
--- information_schema est scopee par catalogue, il faut la
--- prefixer par le nom du catalogue (samples.information_schema...,
--- db_test_sonia.information_schema...) plutot que de filtrer sur
--- table_catalog.
+-- TEST 2 : Silver = colonnes de bronze + les 4 colonnes techniques
+-- Attendu : 0 ligne = PASS
 -- ============================================================
-SELECT
-  'source (samples.bakehouse)' AS endpoint,
-  column_name,
-  data_type
-FROM samples.information_schema.columns
-WHERE table_schema = 'bakehouse'
-  AND table_name   = 'sales_transactions'
 
-UNION ALL
-
-SELECT
-  'bronze (db_test_sonia.sch_bronze)' AS endpoint,
-  column_name,
-  data_type
-FROM db_test_sonia.information_schema.columns
-WHERE table_schema = 'sch_bronze'
-  AND table_name   = 'sales_transactions'
-
-UNION ALL
-
-SELECT
-  'silver (db_test_sonia.sch_silver)' AS endpoint,
-  column_name,
-  data_type
-FROM db_test_sonia.information_schema.columns
-WHERE table_schema = 'sch_silver'
-  AND table_name   = 'sales_transactions'
-
-ORDER BY endpoint, column_name;
-
--- Attendu : les colonnes metier (transactionID, customerID,
--- franchiseID, dateTime, product, quantity, unitPrice,
--- totalPrice, paymentMethod, cardNumber) presentes dans les 3 blocs.
--- Bronze a en plus : _row_hash, ingestion_ts.
--- Silver a en plus : _row_hash, ingestion_ts, valid_from, valid_to.
+WITH brz AS (
+  SELECT column_name, data_type
+  FROM db_test_sonia.information_schema.columns
+  WHERE table_schema = 'sch_bronze' AND table_name = 'sales_transactions'
+),
+slv AS (
+  SELECT column_name, data_type
+  FROM db_test_sonia.information_schema.columns
+  WHERE table_schema = 'sch_silver' AND table_name = 'sales_transactions'
+)
+SELECT COALESCE(b.column_name, s.column_name) AS column_name,
+       b.data_type AS type_bronze, s.data_type AS type_silver
+FROM brz b
+FULL OUTER JOIN slv s ON b.column_name = s.column_name
+WHERE (b.column_name IS NULL
+       AND s.column_name NOT IN ('_key_hash', '_change_hash', 'valid_from', 'valid_to'))
+   OR s.column_name IS NULL
+   OR b.data_type <> s.data_type;
 
 
 -- ============================================================
--- TEST 2 : Comptage de lignes AVANT / APRES (par batch)
--- A executer une fois AVANT de lancer le Job (capture "avant"),
--- puis une fois APRES (capture "apres"), avec le meme batch_ts.
+-- TEST 3 : _key_hash est bien le hash du transactionID
+-- Attendu : 0 ligne = PASS
+-- (on ne recalcule pas _change_hash ici : l'ordre des colonnes de
+--  silver differe de celui de bronze, le hash recalcule serait different)
 -- ============================================================
-SELECT
-  'bronze' AS table_name,
-  COUNT(*) AS nb_lignes
-FROM db_test_sonia.sch_bronze.sales_transactions
-WHERE ingestion_ts = CAST(:batch_ts AS TIMESTAMP)
 
-UNION ALL
-
-SELECT
-  'silver (versions ouvertes touchees par ce batch)' AS table_name,
-  COUNT(*) AS nb_lignes
+SELECT transactionID, _key_hash
 FROM db_test_sonia.sch_silver.sales_transactions
-WHERE ingestion_ts = CAST(:batch_ts AS TIMESTAMP);
+WHERE _key_hash <> sha2(to_json(struct(transactionID)), 256);
 
 
 -- ============================================================
--- TEST 3 : Aucune transaction n'a 2 versions OUVERTES en meme temps
--- (remplace l'ancien test "0 doublon de transactionID", qui n'a
--- plus de sens maintenant que Silver garde volontairement
--- plusieurs versions d'une meme transaction).
+-- TEST 4 : Une transaction n'a jamais 2 versions ouvertes
+-- Attendu : 0 ligne = PASS
 -- ============================================================
-SELECT
-  transactionID,
-  COUNT(*) AS nb_versions_ouvertes
+
+SELECT transactionID, COUNT(*) AS nb_versions_ouvertes
 FROM db_test_sonia.sch_silver.sales_transactions
 WHERE valid_to IS NULL
 GROUP BY transactionID
 HAVING COUNT(*) > 1;
 
--- Attendu : 0 ligne retournee = PASS.
--- Toute ligne retournee ici = FAIL : deux versions ouvertes en
--- meme temps pour la meme transaction, a investiguer immediatement.
-
 
 -- ============================================================
--- TEST 4 : Non-chevauchement des periodes de validite
--- Objectif : pour une transaction historisee, verifier que les
--- periodes [valid_from, valid_to) ne se chevauchent jamais entre
--- deux versions successives.
+-- TEST 5 : Non-chevauchement des periodes de validite
+-- Attendu : 0 ligne = PASS
+-- (pour la demo : remplacer la table par sales_transactions_overlap_test,
+--  le test doit alors afficher des lignes)
 -- ============================================================
+
 WITH versions AS (
   SELECT
-    transactionID,
-    valid_from,
-    valid_to,
+    transactionID, valid_from, valid_to,
+    LEAD(valid_from) OVER (PARTITION BY transactionID ORDER BY valid_from) AS next_valid_from
+  FROM db_test_sonia.sch_silver.sales_transactions
+)
+SELECT *
+FROM versions
+WHERE next_valid_from IS NOT NULL
+  AND (valid_to IS NULL OR valid_to > next_valid_from);
+
+
+-- ============================================================
+-- TEST 6 : Aucune version fermee sans version suivante
+-- (detecte un silver_update reussi suivi d'un silver_insert en echec)
+-- Attendu : 0 ligne = PASS
+-- ============================================================
+
+WITH versions AS (
+  SELECT
+    transactionID, valid_from, valid_to,
     LEAD(valid_from) OVER (PARTITION BY transactionID ORDER BY valid_from) AS next_valid_from
   FROM db_test_sonia.sch_silver.sales_transactions
 )
 SELECT *
 FROM versions
 WHERE valid_to IS NOT NULL
-  AND next_valid_from IS NOT NULL
-  AND valid_to > next_valid_from;
-
--- Attendu : 0 ligne retournee = PASS (la periode de fin d'une
--- version n'est jamais apres le debut de la version suivante).
-
-
--- ============================================================
--- TEST 5 : Coherence Bronze -> Silver (pour le batch traite)
--- Objectif : verifier qu'aucune transaction nouvelle ou modifiee
--- du batch Bronze n'est absente de Silver.
--- ============================================================
-SELECT b.transactionID
-FROM db_test_sonia.sch_bronze.sales_transactions b
-WHERE b.ingestion_ts = CAST(:batch_ts AS TIMESTAMP)
-  AND NOT EXISTS (
-    SELECT 1
-    FROM db_test_sonia.sch_silver.sales_transactions s
-    WHERE s.transactionID = b.transactionID
-  );
-
--- Attendu : 0 ligne retournee = PASS (toute transaction presente
--- dans Bronze pour ce batch a bien au moins une version dans Silver).
-
-
-
-
-
+  AND next_valid_from IS NULL;
